@@ -1,6 +1,5 @@
 """Tests for the alert parser."""
 
-import pytest
 import msgspec
 
 
@@ -65,8 +64,8 @@ class TestAlertParser:
 
     def test_to_enriched_alert(self, mock_config, sample_wazuh_alert):
         """Test converting to EnrichedAlert."""
-        from ai_siem.parser import create_parser
         from ai_siem.models import AlertSeverity
+        from ai_siem.parser import create_parser
 
         parser = create_parser(mock_config)
         parser.mock_mode = False
@@ -80,8 +79,8 @@ class TestAlertParser:
 
     def test_to_enriched_alert_low_severity(self, mock_config, sample_wazuh_alert_low):
         """Test converting low severity alert."""
-        from ai_siem.parser import create_parser
         from ai_siem.models import AlertSeverity
+        from ai_siem.parser import create_parser
 
         parser = create_parser(mock_config)
         parser.mock_mode = False
@@ -107,8 +106,8 @@ class TestAlertParser:
 
     def test_level_to_severity_critical(self, mock_config):
         """Test level 12+ maps to critical."""
-        from ai_siem.parser import create_parser
         from ai_siem.models import AlertSeverity
+        from ai_siem.parser import create_parser
 
         parser = create_parser(mock_config)
         assert parser._level_to_severity(12) == AlertSeverity.CRITICAL
@@ -116,8 +115,8 @@ class TestAlertParser:
 
     def test_level_to_severity_high(self, mock_config):
         """Test level 9-11 maps to high."""
-        from ai_siem.parser import create_parser
         from ai_siem.models import AlertSeverity
+        from ai_siem.parser import create_parser
 
         parser = create_parser(mock_config)
         assert parser._level_to_severity(9) == AlertSeverity.HIGH
@@ -125,8 +124,8 @@ class TestAlertParser:
 
     def test_level_to_severity_medium(self, mock_config):
         """Test level 6-8 maps to medium."""
-        from ai_siem.parser import create_parser
         from ai_siem.models import AlertSeverity
+        from ai_siem.parser import create_parser
 
         parser = create_parser(mock_config)
         assert parser._level_to_severity(6) == AlertSeverity.MEDIUM
@@ -134,8 +133,8 @@ class TestAlertParser:
 
     def test_level_to_severity_low(self, mock_config):
         """Test level 0-5 maps to low."""
-        from ai_siem.parser import create_parser
         from ai_siem.models import AlertSeverity
+        from ai_siem.parser import create_parser
 
         parser = create_parser(mock_config)
         assert parser._level_to_severity(0) == AlertSeverity.LOW
