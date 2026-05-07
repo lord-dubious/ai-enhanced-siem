@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import Any
+from typing import Any, cast
 
 from ai_siem.models import (
-    AlertSeverity,
     EnrichedAlert,
     FirewallRule,
     MitreMapping,
     SIEMConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AlertEnricher:
@@ -26,10 +28,12 @@ class AlertEnricher:
         """
         self.config = config
         self.mock_mode = config.enable_mock_mode
-        self._model = None
+        self._model: Any | None = None
+        self.last_error = ""
+        self.last_failure_reason = "mock_mode" if self.mock_mode else ""
 
     @property
-    def model(self):
+    def model(self) -> Any:
         """Get or create the Gemini model."""
         if self._model is None and not self.mock_mode:
             import google.generativeai as genai
@@ -57,8 +61,10 @@ class AlertEnricher:
             enrichment = self._parse_response(response.text)
             return self._apply_enrichment(alert, enrichment)
         except Exception as e:
-            # Return alert with error note
-            alert.recommendations.append(f"Enrichment failed: {str(e)}")
+            self.last_error = str(e)
+            self.last_failure_reason = f"gemini enrichment failed: {type(e).__name__}: {e}"
+            logger.warning("Gemini enrichment failed for alert %s: %s", alert.alert_id, e)
+            self._apply_fallback_metadata(alert, self.last_failure_reason)
             return alert
 
     def batch_enrich(self, alerts: list[EnrichedAlert]) -> list[EnrichedAlert]:
@@ -113,8 +119,16 @@ Respond with JSON only."""
         try:
             response = self.model.generate_content(prompt)
             return self._extract_json(response.text)
-        except Exception:
-            return {"error": "Analysis failed"}
+        except Exception as e:
+            self.last_error = str(e)
+            self.last_failure_reason = f"gemini analysis failed: {type(e).__name__}: {e}"
+            logger.warning("Gemini threat analysis failed for alert %s: %s", alert.alert_id, e)
+            return {
+                "error": "Analysis failed",
+                "source": "fallback",
+                "requires_human_review": True,
+                "failure_reason": self.last_failure_reason,
+            }
 
     def _build_prompt(self, alert: EnrichedAlert) -> str:
         """Build the enrichment prompt."""
@@ -160,7 +174,8 @@ Return ONLY valid JSON."""
     def _extract_json(self, text: str) -> dict[str, Any]:
         """Extract JSON from response text."""
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
             pass
 
@@ -168,7 +183,8 @@ Return ONLY valid JSON."""
         json_match = re.search(r"\{[\s\S]*\}", text)
         if json_match:
             try:
-                return json.loads(json_match.group())
+                parsed = json.loads(json_match.group())
+                return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else {}
             except json.JSONDecodeError:
                 pass
 
@@ -176,6 +192,10 @@ Return ONLY valid JSON."""
 
     def _apply_enrichment(self, alert: EnrichedAlert, enrichment: dict[str, Any]) -> EnrichedAlert:
         """Apply enrichment data to alert."""
+        alert.enrichment_source = enrichment.get("source", "gemini")
+        alert.enrichment_status = "success"
+        alert.enrichment_error = ""
+
         if "ai_summary" in enrichment:
             alert.ai_summary = enrichment["ai_summary"]
 
@@ -203,6 +223,12 @@ Return ONLY valid JSON."""
                         source_ip=rule.get("source_ip", "any"),
                         port=rule.get("port", "any"),
                         description=rule.get("description", ""),
+                        source=rule.get("source", alert.enrichment_source),
+                        requires_human_review=rule.get("requires_human_review", True),
+                        safety_note=rule.get(
+                            "safety_note",
+                            "Suggestion only; validate context before applying.",
+                        ),
                     )
                 )
 
@@ -214,10 +240,20 @@ Return ONLY valid JSON."""
 
         return alert
 
+    def _apply_fallback_metadata(self, alert: EnrichedAlert, reason: str) -> None:
+        """Mark alert enrichment as degraded without raising to callers."""
+        alert.enrichment_source = "fallback"
+        alert.enrichment_status = "fallback"
+        alert.enrichment_error = reason
+        alert.warnings.append(reason)
+        alert.recommendations.append(f"Enrichment failed; review alert manually: {reason}")
+
     def _mock_enrich(self, alert: EnrichedAlert) -> EnrichedAlert:
         """Generate mock enrichment for testing."""
         alert.ai_summary = f"Mock analysis: {alert.original_description}"
         alert.risk_score = 65.0
+        alert.enrichment_source = "mock"
+        alert.enrichment_status = "mock"
 
         alert.mitre_mappings.append(
             MitreMapping(
@@ -237,6 +273,9 @@ Return ONLY valid JSON."""
                     source_ip=alert.agent_ip,
                     port="22",
                     description="Block SSH brute force source",
+                    source="mock",
+                    requires_human_review=True,
+                    safety_note="Mock suggestion only; do not apply without analyst review.",
                 )
             )
             alert.iocs.append(alert.agent_ip)
