@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
-from ai_siem.models import CacheEntry, EnrichedAlert, SIEMConfig
+from ai_siem.models import EnrichedAlert, SIEMConfig
+
+logger = logging.getLogger(__name__)
 
 
 class AlertCache:
@@ -20,11 +22,33 @@ class AlertCache:
         """
         self.config = config
         self.mock_mode = config.enable_mock_mode
-        self._client = None
+        self._client: Any | None = None
         self._mock_store: dict[str, Any] = {}
+        self.degraded = False
+        self.last_error = ""
+        self.last_failure_reason = "mock_mode" if self.mock_mode else ""
+
+    def _record_failure(self, operation: str, error: Exception) -> None:
+        """Record and log a cache failure without changing method return types."""
+        self.degraded = True
+        self.last_error = str(error)
+        self.last_failure_reason = f"{operation}: {type(error).__name__}: {error}"
+        logger.warning("Redis cache %s failed: %s", operation, error)
+
+    def _record_success(self) -> None:
+        """Clear degraded state after a successful Redis operation."""
+        if not self.mock_mode:
+            self.degraded = False
+            self.last_error = ""
+            self.last_failure_reason = ""
+
+    def _mark_alert_cache_failure(self, alert: EnrichedAlert) -> None:
+        alert.cache_status = "degraded"
+        alert.cache_error = self.last_failure_reason
+        alert.warnings.append(f"Cache degraded: {self.last_failure_reason}")
 
     @property
-    def client(self):
+    def client(self) -> Any:
         """Get or create Redis client."""
         if self._client is None and not self.mock_mode:
             import redis
@@ -53,8 +77,12 @@ class AlertCache:
             return key in self._mock_store
 
         try:
-            return self.client.exists(key) > 0
-        except Exception:
+            client = self.client
+            is_seen = cast(bool, client.exists(key) > 0)
+            self._record_success()
+            return is_seen
+        except Exception as e:
+            self._record_failure("duplicate check", e)
             return False
 
     def mark_seen(self, alert_hash: str) -> None:
@@ -73,9 +101,11 @@ class AlertCache:
             return
 
         try:
-            self.client.setex(key, self.config.alert_cache_ttl, datetime.now().isoformat())
-        except Exception:
-            pass
+            client = self.client
+            client.setex(key, self.config.alert_cache_ttl, datetime.now().isoformat())
+            self._record_success()
+        except Exception as e:
+            self._record_failure("mark seen", e)
 
     def increment_count(self, alert_hash: str) -> int:
         """Increment the count for a seen alert.
@@ -89,13 +119,17 @@ class AlertCache:
         key = f"siem:count:{alert_hash}"
 
         if self.mock_mode:
-            count = self._mock_store.get(key, 0) + 1
+            count = int(self._mock_store.get(key, 0)) + 1
             self._mock_store[key] = count
             return count
 
         try:
-            return self.client.incr(key)
-        except Exception:
+            client = self.client
+            count = cast(int, client.incr(key))
+            self._record_success()
+            return count
+        except Exception as e:
+            self._record_failure("increment count", e)
             return 1
 
     def store_enriched(self, alert: EnrichedAlert) -> bool:
@@ -108,21 +142,30 @@ class AlertCache:
             True if stored successfully
         """
         key = f"siem:alert:{alert.alert_id}"
-        data = alert.model_dump_json()
 
         if self.mock_mode:
+            alert.cache_status = "mock_stored"
+            alert.cache_error = ""
+            data = alert.model_dump_json()
             self._mock_store[key] = data
             return True
 
         try:
-            self.client.setex(key, self.config.alert_cache_ttl * 24, data)
+            alert.cache_status = "stored"
+            alert.cache_error = ""
+            data = alert.model_dump_json()
+            client = self.client
+            client.setex(key, self.config.alert_cache_ttl * 24, data)
             # Also add to sorted set for time-based retrieval
-            self.client.zadd(
+            client.zadd(
                 "siem:alerts:timeline",
                 {alert.alert_id: alert.timestamp.timestamp()},
             )
+            self._record_success()
             return True
-        except Exception:
+        except Exception as e:
+            self._record_failure("store enriched alert", e)
+            self._mark_alert_cache_failure(alert)
             return False
 
     def get_enriched(self, alert_id: str) -> EnrichedAlert | None:
@@ -143,11 +186,13 @@ class AlertCache:
             return None
 
         try:
-            data = self.client.get(key)
+            client = self.client
+            data = client.get(key)
+            self._record_success()
             if data:
                 return EnrichedAlert.model_validate_json(data)
-        except Exception:
-            pass
+        except Exception as e:
+            self._record_failure("retrieve enriched alert", e)
         return None
 
     def get_recent_alerts(
@@ -170,23 +215,26 @@ class AlertCache:
                         alert = EnrichedAlert.model_validate_json(data)
                         if severity is None or alert.severity.value == severity:
                             alerts.append(alert)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Skipping malformed mock cache entry %s: %s", key, e)
             return sorted(alerts, key=lambda a: a.timestamp, reverse=True)[:limit]
 
         try:
             # Get recent alert IDs from timeline
-            alert_ids = self.client.zrevrange("siem:alerts:timeline", 0, limit - 1)
+            client = self.client
+            alert_ids = client.zrevrange("siem:alerts:timeline", 0, limit - 1)
 
-            alerts = []
+            redis_alerts = []
             for alert_id in alert_ids:
-                alert = self.get_enriched(alert_id)
-                if alert:
-                    if severity is None or alert.severity.value == severity:
-                        alerts.append(alert)
+                retrieved = self.get_enriched(alert_id)
+                if retrieved:
+                    if severity is None or retrieved.severity.value == severity:
+                        redis_alerts.append(retrieved)
 
-            return alerts
-        except Exception:
+            self._record_success()
+            return redis_alerts
+        except Exception as e:
+            self._record_failure("get recent alerts", e)
             return []
 
     def get_stats(self) -> dict[str, Any]:
@@ -201,18 +249,35 @@ class AlertCache:
                 "seen_alerts": sum(1 for k in self._mock_store if k.startswith("siem:seen:")),
                 "stored_alerts": sum(1 for k in self._mock_store if k.startswith("siem:alert:")),
                 "connected": True,
+                "degraded": False,
+                "mode": "mock",
+                "last_error": self.last_error,
+                "last_failure_reason": self.last_failure_reason,
             }
 
         try:
-            info = self.client.info()
+            client = self.client
+            info = client.info()
+            self._record_success()
             return {
                 "total_keys": info.get("db0", {}).get("keys", 0),
                 "memory_used": info.get("used_memory_human", "0B"),
                 "connected_clients": info.get("connected_clients", 0),
                 "connected": True,
+                "degraded": False,
+                "mode": "redis",
+                "last_error": "",
+                "last_failure_reason": "",
             }
-        except Exception:
-            return {"connected": False}
+        except Exception as e:
+            self._record_failure("get stats", e)
+            return {
+                "connected": False,
+                "degraded": True,
+                "mode": "redis",
+                "last_error": self.last_error,
+                "last_failure_reason": self.last_failure_reason,
+            }
 
     def clear(self) -> bool:
         """Clear all SIEM-related keys.
@@ -227,14 +292,17 @@ class AlertCache:
         try:
             # Use SCAN to find and delete SIEM keys
             cursor = 0
+            client = self.client
             while True:
-                cursor, keys = self.client.scan(cursor, match="siem:*", count=100)
+                cursor, keys = client.scan(cursor, match="siem:*", count=100)
                 if keys:
-                    self.client.delete(*keys)
+                    client.delete(*keys)
                 if cursor == 0:
                     break
+            self._record_success()
             return True
-        except Exception:
+        except Exception as e:
+            self._record_failure("clear", e)
             return False
 
     def close(self) -> None:
@@ -242,8 +310,8 @@ class AlertCache:
         if self._client is not None:
             try:
                 self._client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self._record_failure("close", e)
             self._client = None
 
 

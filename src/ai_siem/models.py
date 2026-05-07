@@ -8,7 +8,7 @@ from typing import Any
 
 import msgspec
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AlertSeverity(str, Enum):
@@ -42,6 +42,8 @@ class MitreTactic(str, Enum):
 class SIEMConfig(BaseSettings):
     """Configuration for the AI-Enhanced SIEM."""
 
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     gemini_api_key: str = Field(default="", description="Gemini API key")
     gemini_model: str = Field(default="gemini-2.0-flash", description="Gemini model")
     redis_host: str = Field(default="localhost", description="Redis host")
@@ -62,12 +64,6 @@ class SIEMConfig(BaseSettings):
     enable_mock_mode: bool = Field(default=False, description="Enable mock mode")
     batch_size: int = Field(default=100, description="Batch size for processing")
     log_level: str = Field(default="INFO", description="Logging level")
-
-    class Config:
-        """Pydantic settings configuration."""
-
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 # msgspec structs for ultra-fast JSON parsing
@@ -126,6 +122,15 @@ class FirewallRule(BaseModel):
     port: str = Field(default="any", description="Port or port range")
     description: str = Field(default="", description="Rule description")
     priority: int = Field(default=100, description="Rule priority")
+    source: str = Field(default="unspecified", description="Source of the rule suggestion")
+    requires_human_review: bool = Field(
+        default=True,
+        description="Whether the suggestion requires human review before use",
+    )
+    safety_note: str = Field(
+        default="Suggestion only; review before applying in any firewall.",
+        description="Safety note for operators reviewing the suggestion",
+    )
 
 
 class EnrichedAlert(BaseModel):
@@ -147,6 +152,30 @@ class EnrichedAlert(BaseModel):
     recommendations: list[str] = Field(
         default_factory=list, description="Remediation recommendations"
     )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal processing warnings or degraded-mode notes",
+    )
+    enrichment_source: str = Field(
+        default="not_enriched",
+        description="Source used for enrichment metadata",
+    )
+    enrichment_status: str = Field(
+        default="pending",
+        description="Enrichment status such as success, mock, or fallback",
+    )
+    enrichment_error: str = Field(
+        default="",
+        description="Last enrichment error when fallback metadata was used",
+    )
+    cache_status: str = Field(
+        default="not_stored",
+        description="Last cache storage status for this alert",
+    )
+    cache_error: str = Field(
+        default="",
+        description="Last cache error observed while handling this alert",
+    )
     agent_name: str = Field(default="", description="Source agent name")
     agent_ip: str = Field(default="", description="Source agent IP")
     raw_data: dict[str, Any] = Field(default_factory=dict, description="Raw alert data")
@@ -162,6 +191,8 @@ class AlertBatch(BaseModel):
     total_count: int = Field(default=0, description="Total alerts in batch")
     enriched_count: int = Field(default=0, description="Successfully enriched alerts")
     error_count: int = Field(default=0, description="Alerts with errors")
+    warning_count: int = Field(default=0, description="Alerts with warnings")
+    warnings: list[str] = Field(default_factory=list, description="Batch processing warnings")
 
 
 class AlertStats(BaseModel):
