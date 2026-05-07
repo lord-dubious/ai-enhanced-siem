@@ -1,6 +1,20 @@
 """Tests for the SIEM pipeline."""
 
-import pytest
+
+class FailingPipelineCache:
+    """Cache test double that fails stores but keeps dedupe permissive."""
+
+    def is_duplicate(self, alert_hash):
+        return False
+
+    def mark_seen(self, alert_hash):
+        return None
+
+    def store_enriched(self, alert):
+        alert.cache_status = "degraded"
+        alert.cache_error = "store failed during test"
+        alert.warnings.append("Cache degraded: store failed during test")
+        return False
 
 
 class TestSIEMPipeline:
@@ -44,6 +58,19 @@ class TestSIEMPipeline:
         for alert in batch.alerts:
             assert alert.ai_summary != "" or alert.risk_score > 0
 
+    def test_process_file_propagates_cache_warnings(self, mock_config):
+        """Test cache degradation is visible on alerts and the batch."""
+        from ai_siem.pipeline import create_pipeline
+
+        pipeline = create_pipeline(mock_config)
+        pipeline.cache = FailingPipelineCache()
+        batch = pipeline.process_file()
+
+        assert batch.warning_count > 0
+        assert batch.warnings
+        assert all(alert.cache_status == "degraded" for alert in batch.alerts)
+        assert all(alert.warnings for alert in batch.alerts)
+
     def test_process_file_deduplication(self, mock_config):
         """Test duplicate alerts are filtered."""
         from ai_siem.pipeline import create_pipeline
@@ -51,7 +78,7 @@ class TestSIEMPipeline:
         pipeline = create_pipeline(mock_config)
 
         # Process twice
-        batch1 = pipeline.process_file()
+        pipeline.process_file()
         batch2 = pipeline.process_file()
 
         # Second batch should have no alerts (all duplicates)

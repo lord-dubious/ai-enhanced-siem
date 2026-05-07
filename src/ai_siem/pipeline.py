@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime
 from typing import Iterator
@@ -15,6 +16,8 @@ from ai_siem.models import (
     SIEMConfig,
 )
 from ai_siem.parser import AlertParser, create_parser
+
+logger = logging.getLogger(__name__)
 
 
 class SIEMPipeline:
@@ -69,11 +72,20 @@ class SIEMPipeline:
             try:
                 alert = self.enricher.enrich(alert)
                 batch.enriched_count += 1
-            except Exception:
+            except Exception as e:
+                message = f"Pipeline enrichment failed for alert {alert.alert_id}: {e}"
+                logger.warning(message)
+                alert.enrichment_source = "pipeline_fallback"
+                alert.enrichment_status = "fallback"
+                alert.enrichment_error = message
+                alert.warnings.append(message)
+                batch.warnings.append(message)
                 batch.error_count += 1
 
             # Store in cache
-            self.cache.store_enriched(alert)
+            if not self.cache.store_enriched(alert):
+                message = f"Cache storage degraded for alert {alert.alert_id}: {alert.cache_error}"
+                batch.warnings.append(message)
             alerts.append(alert)
 
             # Batch size limit
@@ -82,6 +94,7 @@ class SIEMPipeline:
 
         batch.alerts = alerts
         batch.processed_at = datetime.now()
+        batch.warning_count = sum(1 for alert in alerts if alert.warnings) + len(batch.warnings)
 
         # Update stats
         self._update_stats(batch, time.time() - start_time)
@@ -114,11 +127,19 @@ class SIEMPipeline:
 
             try:
                 alert = self.enricher.enrich(alert)
-            except Exception:
-                pass
+            except Exception as e:
+                message = f"Pipeline enrichment failed for alert {alert.alert_id}: {e}"
+                logger.warning(message)
+                alert.enrichment_source = "pipeline_fallback"
+                alert.enrichment_status = "fallback"
+                alert.enrichment_error = message
+                alert.warnings.append(message)
 
             # Store
-            self.cache.store_enriched(alert)
+            if not self.cache.store_enriched(alert):
+                logger.warning(
+                    "Cache storage degraded for alert %s: %s", alert.alert_id, alert.cache_error
+                )
 
             yield alert
 
