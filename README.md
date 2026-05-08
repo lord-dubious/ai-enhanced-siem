@@ -1,15 +1,15 @@
 # AI-Enhanced SIEM
 
-A high-performance Security Information and Event Management (SIEM) pipeline that uses **Gemini AI** for intelligent alert enrichment, **msgspec** for ultra-fast JSON parsing (10-20x faster than standard json/pydantic), and **Redis** for smart deduplication.
+A Security Information and Event Management (SIEM) pipeline that parses Wazuh alerts with `msgspec`, uses Redis for deduplication/storage when available, and can call Gemini for optional alert enrichment. When Redis or Gemini is unavailable, the pipeline records degraded-mode metadata on alerts and cache stats instead of hiding the failure.
 
 ## Features
 
-- **Ultra-Fast Parsing**: Uses `msgspec` for zero-copy JSON deserialization of Wazuh alerts
-- **Intelligent Deduplication**: Redis-backed bloom filter to prevent duplicate alert processing
-- **AI-Powered Enrichment**: Gemini 3.0 Flash maps alerts to MITRE ATT&CK tactics and suggests remediation
-- **Real-Time Processing**: Stream processing of Wazuh `alerts.json` with sub-millisecond parsing latency
+- **Structured Parsing**: Uses `msgspec` for JSON deserialization of Wazuh alerts
+- **Redis Deduplication**: Redis-backed alert deduplication with explicit degraded-state reporting
+- **Optional Gemini Enrichment**: Gemini can map alerts to MITRE ATT&CK tactics and suggest remediation when configured
+- **Streaming Processing**: Stream processing of Wazuh `alerts.json`
 - **IOC Extraction**: Automatic extraction of IP addresses, domains, file hashes, and other indicators
-- **Firewall Rule Generation**: AI-suggested firewall rules based on detected threats
+- **Firewall Rule Suggestions**: Suggested firewall rules include source metadata and require human review before use
 
 ## Architecture
 
@@ -20,10 +20,10 @@ A high-performance Security Information and Event Management (SIEM) pipeline tha
                                                           │
                                                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     AI-Enhanced SIEM Pipeline                        │
+│                     SIEM Alert Pipeline                              │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────┐  │
-│  │   msgspec   │───▶│    Redis    │───▶│    Gemini AI Enricher   │  │
-│  │   Parser    │    │   Deduper   │    │  (MITRE, IOCs, Rules)   │  │
+│  │   msgspec   │───▶│    Redis    │───▶│   Optional Gemini       │  │
+│  │   Parser    │    │   Deduper   │    │  (MITRE, IOCs, Hints)   │  │
 │  └─────────────┘    └─────────────┘    └─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
                                                           │
@@ -132,9 +132,9 @@ with open("alerts.json") as f:
 | 6-8 | MEDIUM | Standard enrichment |
 | 0-5 | LOW | Log only, minimal enrichment |
 
-## MITRE ATT&CK Integration
+## MITRE ATT&CK and Rule-Suggestion Metadata
 
-The AI enricher automatically maps alerts to MITRE ATT&CK:
+Gemini or mock enrichment can add MITRE ATT&CK mappings and remediation suggestions. Treat firewall rules as reviewable suggestions, not production-ready commands:
 
 ```json
 {
@@ -150,25 +150,35 @@ The AI enricher automatically maps alerts to MITRE ATT&CK:
     "ip_addresses": ["192.168.1.100"],
     "usernames": ["admin", "root"]
   },
-  "suggested_actions": [
-    "Block source IP at firewall",
-    "Enable account lockout policy",
-    "Review SSH access logs"
+  "enrichment_source": "gemini",
+  "enrichment_status": "success",
+  "recommendations": [
+    "Review SSH access logs",
+    "Validate source IP reputation"
   ],
-  "firewall_rule": "iptables -A INPUT -s 192.168.1.100 -j DROP"
+  "suggested_rules": [
+    {
+      "action": "block",
+      "source_ip": "192.168.1.100",
+      "port": "22",
+      "source": "gemini",
+      "requires_human_review": true,
+      "safety_note": "Suggestion only; validate context before applying."
+    }
+  ]
 }
 ```
 
 ## Performance
 
-Benchmarks on Intel i7-12700H, 32GB RAM:
+Performance depends on alert shape, Redis availability, hardware, and Gemini API latency. The project does not currently publish reproducible benchmarks; measure in your environment before making capacity claims.
 
 | Metric | Value |
 |--------|-------|
-| JSON Parsing (msgspec) | ~500,000 alerts/sec |
-| Deduplication Check | ~100,000 ops/sec |
-| AI Enrichment | ~10 alerts/sec (API limited) |
-| Memory per 10K alerts | ~50MB |
+| JSON Parsing | Environment dependent |
+| Deduplication Check | Redis/network dependent |
+| Gemini Enrichment | API and quota dependent |
+| Memory Usage | Alert-volume dependent |
 
 ## Testing
 
@@ -193,9 +203,9 @@ ai-enhanced-siem/
 ├── src/ai_siem/
 │   ├── __init__.py      # Package exports
 │   ├── models.py        # Pydantic + msgspec data models
-│   ├── parser.py        # Ultra-fast Wazuh alert parser
+│   ├── parser.py        # Wazuh alert parser
 │   ├── cache.py         # Redis deduplication cache
-│   ├── enricher.py      # Gemini AI enrichment engine
+│   ├── enricher.py      # Optional Gemini enrichment engine
 │   ├── pipeline.py      # Main processing orchestrator
 │   └── cli.py           # Typer CLI interface
 ├── tests/
@@ -226,6 +236,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - [Wazuh](https://wazuh.com/) - Open source security monitoring
-- [msgspec](https://jcristharif.com/msgspec/) - Ultra-fast serialization
-- [Google Gemini](https://ai.google.dev/) - AI enrichment engine
+- [msgspec](https://jcristharif.com/msgspec/) - Structured serialization
+- [Google Gemini](https://ai.google.dev/) - Optional enrichment provider
 - [MITRE ATT&CK](https://attack.mitre.org/) - Threat framework

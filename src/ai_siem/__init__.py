@@ -1,5 +1,13 @@
-"""AI-Enhanced SIEM with Wazuh, msgspec, Redis, and Gemini AI."""
+"""SIEM alert pipeline with Wazuh, msgspec, Redis, and optional Gemini enrichment."""
 
+from ai_siem.cache import (
+    AlertCache,
+    create_cache,
+)
+from ai_siem.enricher import (
+    AlertEnricher,
+    create_enricher,
+)
 from ai_siem.models import (
     AlertBatch,
     AlertSeverity,
@@ -19,14 +27,6 @@ from ai_siem.models import (
 from ai_siem.parser import (
     AlertParser,
     create_parser,
-)
-from ai_siem.cache import (
-    AlertCache,
-    create_cache,
-)
-from ai_siem.enricher import (
-    AlertEnricher,
-    create_enricher,
 )
 from ai_siem.pipeline import (
     SIEMPipeline,

@@ -1,6 +1,36 @@
 """Tests for the alert enricher."""
 
-import pytest
+
+class FailingGeminiModel:
+    """Gemini-like model that raises during content generation."""
+
+    def generate_content(self, prompt):
+        raise RuntimeError(f"gemini unavailable for {prompt[:10]}")
+
+
+class SuccessfulGeminiModel:
+    """Gemini-like model that returns deterministic enrichment JSON."""
+
+    def generate_content(self, prompt):
+        class Response:
+            text = """{
+                "source": "gemini",
+                "ai_summary": "Gemini summary",
+                "risk_score": 80,
+                "suggested_rules": [
+                    {
+                        "action": "block",
+                        "direction": "inbound",
+                        "protocol": "tcp",
+                        "source_ip": "10.0.0.50",
+                        "port": "22",
+                        "description": "Review SSH source"
+                    }
+                ],
+                "recommendations": ["Review SSH logs"]
+            }"""
+
+        return Response()
 
 
 class TestAlertEnricher:
@@ -38,6 +68,8 @@ class TestAlertEnricher:
         assert enriched.risk_score > 0
         assert len(enriched.mitre_mappings) > 0
         assert len(enriched.recommendations) > 0
+        assert enriched.enrichment_source == "mock"
+        assert enriched.enrichment_status == "mock"
 
     def test_enrich_ssh_alert(self, mock_config):
         """Test enriching SSH-related alert."""
@@ -122,6 +154,42 @@ End of response."""
         result = enricher._extract_json(text)
         assert result == {}
 
+    def test_gemini_error_uses_visible_fallback_metadata(self, monkeypatch):
+        """Test Gemini errors leave explicit fallback provenance on alerts."""
+        monkeypatch.delenv("ENABLE_MOCK_MODE", raising=False)
+        from ai_siem.enricher import create_enricher
+        from ai_siem.models import EnrichedAlert, SIEMConfig
+
+        enricher = create_enricher(SIEMConfig(enable_mock_mode=False, gemini_api_key="test"))
+        enricher._model = FailingGeminiModel()
+        alert = EnrichedAlert(alert_id="gemini-down", original_description="Suspicious login")
+
+        enriched = enricher.enrich(alert)
+
+        assert enriched.enrichment_source == "fallback"
+        assert enriched.enrichment_status == "fallback"
+        assert "gemini enrichment failed" in enriched.enrichment_error
+        assert enriched.warnings
+        assert "gemini enrichment failed" in enricher.last_failure_reason
+
+    def test_gemini_firewall_rule_records_source_and_review(self, monkeypatch):
+        """Test Gemini firewall suggestions carry source and review metadata."""
+        monkeypatch.delenv("ENABLE_MOCK_MODE", raising=False)
+        from ai_siem.enricher import create_enricher
+        from ai_siem.models import EnrichedAlert, SIEMConfig
+
+        enricher = create_enricher(SIEMConfig(enable_mock_mode=False, gemini_api_key="test"))
+        enricher._model = SuccessfulGeminiModel()
+        alert = EnrichedAlert(alert_id="gemini-ok", original_description="SSH brute force")
+
+        enriched = enricher.enrich(alert)
+
+        assert enriched.enrichment_source == "gemini"
+        rule = enriched.suggested_rules[0]
+        assert rule.source == "gemini"
+        assert rule.requires_human_review is True
+        assert "Suggestion only" in rule.safety_note
+
 
 class TestMitreMapping:
     """Tests for MITRE ATT&CK mapping."""
@@ -163,3 +231,5 @@ class TestFirewallRules:
         rule = enriched.suggested_rules[0]
         assert rule.action == "block"
         assert rule.protocol == "tcp"
+        assert rule.source == "mock"
+        assert rule.requires_human_review is True

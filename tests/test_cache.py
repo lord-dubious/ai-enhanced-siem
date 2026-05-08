@@ -1,6 +1,29 @@
 """Tests for the alert cache."""
 
-import pytest
+
+class FailingRedis:
+    """Redis-like client that fails every operation used by AlertCache."""
+
+    def exists(self, key):
+        raise ConnectionError(f"redis unavailable for {key}")
+
+    def setex(self, key, ttl, value):
+        raise ConnectionError(f"redis unavailable for {key}")
+
+    def incr(self, key):
+        raise ConnectionError(f"redis unavailable for {key}")
+
+    def get(self, key):
+        raise ConnectionError(f"redis unavailable for {key}")
+
+    def zrevrange(self, key, start, end):
+        raise ConnectionError(f"redis unavailable for {key}")
+
+    def info(self):
+        raise ConnectionError("redis unavailable for info")
+
+    def scan(self, cursor, match, count):
+        raise ConnectionError("redis unavailable for scan")
 
 
 class TestAlertCache:
@@ -68,6 +91,7 @@ class TestAlertCache:
 
         result = cache.store_enriched(alert)
         assert result is True
+        assert alert.cache_status == "mock_stored"
 
     def test_get_enriched(self, mock_config):
         """Test retrieving enriched alert."""
@@ -98,7 +122,7 @@ class TestAlertCache:
     def test_get_recent_alerts(self, mock_config):
         """Test getting recent alerts."""
         from ai_siem.cache import create_cache
-        from ai_siem.models import EnrichedAlert, AlertSeverity
+        from ai_siem.models import AlertSeverity, EnrichedAlert
 
         cache = create_cache(mock_config)
 
@@ -116,7 +140,7 @@ class TestAlertCache:
     def test_get_recent_alerts_with_severity_filter(self, mock_config):
         """Test filtering recent alerts by severity."""
         from ai_siem.cache import create_cache
-        from ai_siem.models import EnrichedAlert, AlertSeverity
+        from ai_siem.models import AlertSeverity, EnrichedAlert
 
         cache = create_cache(mock_config)
 
@@ -142,6 +166,7 @@ class TestAlertCache:
         stats = cache.get_stats()
         assert "total_keys" in stats
         assert stats["connected"] is True
+        assert stats["mode"] == "mock"
 
     def test_clear(self, mock_config):
         """Test clearing cache."""
@@ -164,3 +189,28 @@ class TestAlertCache:
         cache = create_cache(mock_config)
         cache.close()
         # Should not raise
+
+    def test_redis_failure_records_degraded_state(self, monkeypatch):
+        """Test Redis failures are visible while return types stay stable."""
+        monkeypatch.delenv("ENABLE_MOCK_MODE", raising=False)
+        from ai_siem.cache import create_cache
+        from ai_siem.models import EnrichedAlert, SIEMConfig
+
+        config = SIEMConfig(enable_mock_mode=False)
+        cache = create_cache(config)
+        cache._client = FailingRedis()
+
+        assert cache.is_duplicate("hash-1") is False
+        assert cache.degraded is True
+        assert "duplicate check" in cache.last_failure_reason
+
+        alert = EnrichedAlert(alert_id="redis-down", original_description="Test")
+        assert cache.store_enriched(alert) is False
+        assert alert.cache_status == "degraded"
+        assert "store enriched alert" in alert.cache_error
+        assert alert.warnings
+
+        stats = cache.get_stats()
+        assert stats["connected"] is False
+        assert stats["degraded"] is True
+        assert "get stats" in stats["last_failure_reason"]

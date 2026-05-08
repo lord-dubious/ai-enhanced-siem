@@ -1,8 +1,6 @@
-"""CLI for the AI-Enhanced SIEM."""
+"""CLI for the SIEM alert pipeline."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -11,11 +9,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from ai_siem.models import SIEMConfig, create_config
-from ai_siem.pipeline import SIEMPipeline, create_pipeline
+from ai_siem.pipeline import create_pipeline
 
 app = typer.Typer(
     name="ai-siem",
-    help="AI-Enhanced SIEM with Wazuh, msgspec, Redis, and Gemini AI",
+    help="SIEM alert pipeline with Wazuh, msgspec, Redis, and optional Gemini enrichment",
     add_completion=False,
 )
 console = Console()
@@ -23,7 +21,7 @@ console = Console()
 
 def get_config(api_key: str | None = None, mock: bool = False) -> SIEMConfig:
     """Get configuration with optional overrides."""
-    kwargs = {"enable_mock_mode": mock}
+    kwargs: dict[str, object] = {"enable_mock_mode": mock}
     if api_key:
         kwargs["gemini_api_key"] = api_key
     return create_config(**kwargs)

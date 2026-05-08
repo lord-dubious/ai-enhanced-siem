@@ -1,8 +1,5 @@
 """Tests for Pydantic and msgspec models."""
 
-import pytest
-from datetime import datetime
-
 
 class TestSIEMConfig:
     """Tests for SIEMConfig model."""
@@ -105,7 +102,7 @@ class TestEnrichedAlert:
 
     def test_enriched_alert_creation(self):
         """Test creating an EnrichedAlert."""
-        from ai_siem.models import EnrichedAlert, AlertSeverity
+        from ai_siem.models import AlertSeverity, EnrichedAlert
 
         alert = EnrichedAlert(
             alert_id="test-123",
@@ -115,6 +112,9 @@ class TestEnrichedAlert:
         assert alert.alert_id == "test-123"
         assert alert.severity == AlertSeverity.HIGH
         assert alert.risk_score == 0.0
+        assert alert.enrichment_source == "not_enriched"
+        assert alert.enrichment_status == "pending"
+        assert alert.cache_status == "not_stored"
 
     def test_create_enriched_alert_factory(self):
         """Test create_enriched_alert factory."""
@@ -158,6 +158,8 @@ class TestFirewallRule:
         )
         assert rule.action == "block"
         assert rule.port == "22"
+        assert rule.requires_human_review is True
+        assert "Suggestion only" in rule.safety_note
 
     def test_firewall_rule_defaults(self):
         """Test FirewallRule defaults."""
@@ -167,6 +169,7 @@ class TestFirewallRule:
         assert rule.action == "block"
         assert rule.direction == "inbound"
         assert rule.protocol == "any"
+        assert rule.source == "unspecified"
 
 
 class TestAlertBatch:
