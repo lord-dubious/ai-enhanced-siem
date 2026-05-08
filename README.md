@@ -2,6 +2,11 @@
 
 A Security Information and Event Management (SIEM) pipeline that parses Wazuh alerts with `msgspec`, uses Redis for deduplication/storage when available, and can call Gemini for optional alert enrichment. When Redis or Gemini is unavailable, the pipeline records degraded-mode metadata on alerts and cache stats instead of hiding the failure.
 
+## Portfolio Review
+
+- [Architecture](docs/ARCHITECTURE.md) - component boundaries, data flow, external dependencies, and degraded-mode behavior.
+- [Demo Guide](docs/DEMO.md) - safe local walkthrough commands and recruiter-facing talking points.
+
 ## Features
 
 - **Structured Parsing**: Uses `msgspec` for JSON deserialization of Wazuh alerts
