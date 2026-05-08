@@ -2,10 +2,62 @@
 
 A Security Information and Event Management (SIEM) pipeline that parses Wazuh alerts with `msgspec`, uses Redis for deduplication/storage when available, and can call Gemini for optional alert enrichment. When Redis or Gemini is unavailable, the pipeline records degraded-mode metadata on alerts and cache stats instead of hiding the failure.
 
-## Portfolio Review
+## Portfolio Showcase
 
-- [Architecture](docs/ARCHITECTURE.md) - component boundaries, data flow, external dependencies, and degraded-mode behavior.
-- [Demo Guide](docs/DEMO.md) - safe local walkthrough commands and recruiter-facing talking points.
+![AI-Enhanced SIEM CLI showcase](docs/assets/showcase.png)
+
+- **Architecture deep dive:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- **Demo guide:** [`docs/DEMO.md`](docs/DEMO.md)
+- **Reviewer focus:** typed alert intake, Redis degraded-state tracking, Gemini enrichment, and human-reviewed response suggestions.
+
+## Architecture Overview
+
+```mermaid
+flowchart TB
+    classDef input fill:#ecfeff,stroke:#0891b2,stroke-width:2px,color:#164e63
+    classDef core fill:#eef2ff,stroke:#4f46e5,stroke-width:2px,color:#312e81
+    classDef external fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#7c2d12
+    classDef metadata fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#14532d
+    classDef review fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+
+    Alerts[/Wazuh-style alert JSON/]:::input
+    Analyst[/SOC analyst review/]:::review
+
+    subgraph Intake["Typed Intake"]
+        Parser[msgspec parser]:::core
+        Batch[Alert batch model]:::metadata
+    end
+
+    subgraph State["Cache and Deduplication Boundary"]
+        Cache[Redis cache manager]:::core
+        Redis[(Redis optional)]:::external
+        CacheStatus[cache_status cache_error degraded state]:::metadata
+    end
+
+    subgraph Triage["Enrichment Boundary"]
+        Enricher[Gemini alert enricher]:::core
+        Gemini{{Gemini API optional}}:::external
+        EnrichmentStatus[enrichment source status error]:::metadata
+    end
+
+    subgraph Response["Human-Gated Response"]
+        Firewall[Firewall rule suggestions]:::core
+        Warnings[Batch warnings]:::metadata
+        Output[Enriched alerts and suggestions]:::review
+    end
+
+    Alerts --> Parser --> Batch --> Cache
+    Cache <-->|dedupe state| Redis
+    Cache -. Redis unavailable .-> CacheStatus
+    Cache --> Enricher
+    Enricher <-->|optional triage| Gemini
+    Enricher -. unavailable or failed .-> EnrichmentStatus
+    Enricher --> Firewall
+    Firewall -->|requires human review| Output
+    CacheStatus --> Warnings
+    EnrichmentStatus --> Warnings
+    Warnings --> Output --> Analyst
+```
 
 ## Features
 
@@ -15,28 +67,6 @@ A Security Information and Event Management (SIEM) pipeline that parses Wazuh al
 - **Streaming Processing**: Stream processing of Wazuh `alerts.json`
 - **IOC Extraction**: Automatic extraction of IP addresses, domains, file hashes, and other indicators
 - **Firewall Rule Suggestions**: Suggested firewall rules include source metadata and require human review before use
-
-## Architecture
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Wazuh Agent   │────▶│  Wazuh Manager   │────▶│  alerts.json    │
-└─────────────────┘     └──────────────────┘     └────────┬────────┘
-                                                          │
-                                                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     SIEM Alert Pipeline                              │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────┐  │
-│  │   msgspec   │───▶│    Redis    │───▶│   Optional Gemini       │  │
-│  │   Parser    │    │   Deduper   │    │  (MITRE, IOCs, Hints)   │  │
-│  └─────────────┘    └─────────────┘    └─────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                                                          │
-                                                          ▼
-                              ┌──────────────────────────────────────┐
-                              │  OpenSearch / Elasticsearch / SIEM   │
-                              └──────────────────────────────────────┘
-```
 
 ## Installation
 
