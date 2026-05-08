@@ -14,12 +14,50 @@ This document is written for reviewers who want to understand how the project is
 6. Batch output
 
 ```mermaid
-flowchart LR
-    A1[Alert intake] --> A2[msgspec parser]
-    A2[msgspec parser] --> A3[Redis cache/deduplication]
-    A3[Redis cache/deduplication] --> A4[Gemini enrichment or fallback metadata]
-    A4[Gemini enrichment or fallback metadata] --> A5[Firewall suggestion candidates]
-    A5[Firewall suggestion candidates] --> A6[Batch output]
+flowchart TB
+    classDef input fill:#ecfeff,stroke:#0891b2,stroke-width:2px,color:#164e63
+    classDef core fill:#eef2ff,stroke:#4f46e5,stroke-width:2px,color:#312e81
+    classDef external fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#7c2d12
+    classDef metadata fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#14532d
+    classDef review fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+
+    Alerts[/Wazuh-style alert JSON/]:::input
+    Analyst[/SOC analyst review/]:::review
+
+    subgraph Intake["Typed Intake"]
+        Parser[msgspec parser]:::core
+        Batch[Alert batch model]:::metadata
+    end
+
+    subgraph State["Cache and Deduplication Boundary"]
+        Cache[Redis cache manager]:::core
+        Redis[(Redis optional)]:::external
+        CacheStatus[cache_status cache_error degraded state]:::metadata
+    end
+
+    subgraph Triage["Enrichment Boundary"]
+        Enricher[Gemini alert enricher]:::core
+        Gemini{{Gemini API optional}}:::external
+        EnrichmentStatus[enrichment source status error]:::metadata
+    end
+
+    subgraph Response["Human-Gated Response"]
+        Firewall[Firewall rule suggestions]:::core
+        Warnings[Batch warnings]:::metadata
+        Output[Enriched alerts and suggestions]:::review
+    end
+
+    Alerts --> Parser --> Batch --> Cache
+    Cache <-->|dedupe state| Redis
+    Cache -. Redis unavailable .-> CacheStatus
+    Cache --> Enricher
+    Enricher <-->|optional triage| Gemini
+    Enricher -. unavailable or failed .-> EnrichmentStatus
+    Enricher --> Firewall
+    Firewall -->|requires human review| Output
+    CacheStatus --> Warnings
+    EnrichmentStatus --> Warnings
+    Warnings --> Output --> Analyst
 ```
 
 ## Main Components
